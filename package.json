@@ -3,7 +3,7 @@
   "name": "ip-finder",
   "title": "Ip Finder - Network Scanner",
   "description": "Scan your local network to find assigned IPs and get recommendations for available addresses",
-  "icon": "command-icon.png",
+  "icon": "assets/command-icon.png",
   "author": "almatkai",
   "license": "MIT",
   "commands": [

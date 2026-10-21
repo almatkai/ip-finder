@@ -19,13 +19,14 @@ import {
   Alert,
   confirmAlert,
 } from "@raycast/api";
-import { exec } from "child_process";
+import { execFile } from "node:child_process";
+import { createConnection } from "node:net";
 import { promisify } from "util";
 import { networkInterfaces, platform } from "os";
 import { promises as dns } from "dns";
 import { showFailureToast } from "@raycast/utils";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 interface DeviceInfo {
   ip: string;
@@ -183,8 +184,7 @@ export default function Command() {
     const arpMap = new Map<string, string>();
     try {
       const isWindows = platform() === "win32";
-      const command = isWindows ? "arp -a" : "arp -n";
-      const { stdout } = await execAsync(command);
+      const { stdout } = await execFileAsync("arp", [isWindows ? "-a" : "-n"], { windowsHide: true });
 
       const lines = stdout.split("\n");
       for (const line of lines) {
@@ -244,59 +244,36 @@ export default function Command() {
   };
 
   const scanPorts = async (ip: string, ports: number[]): Promise<number[]> => {
-    const openPorts: number[] = [];
-    const isWindows = platform() === "win32";
-    const isMac = platform() === "darwin";
-
     const commonPorts =
       ports.length > 0
         ? ports
         : [21, 22, 23, 25, 53, 80, 110, 143, 443, 993, 995, 8080, 8443];
 
-    for (const port of commonPorts) {
-      try {
-        let command = "";
-        let success = false;
-
-        if (isWindows) {
-          command = `powershell -Command "Test-NetConnection -ComputerName ${ip} -Port ${port} -InformationLevel Quiet"`;
-        } else if (isMac) {
-          command = `nc -z -G 1 ${ip} ${port}`;
-        } else {
-          command = `nc -z -w 1 ${ip} ${port}`;
-        }
-
-        try {
-          await execAsync(command, { timeout: 2000 });
-          success = true;
-        } catch {
-          if (!isWindows) {
-            try {
-              command = `timeout 2 bash -c "</dev/tcp/${ip}/${port}"`;
-              await execAsync(command, { timeout: 2000 });
-              success = true;
-            } catch {
-              // ignore
-            }
-          }
-        }
-
-        if (success) {
-          openPorts.push(port);
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    return openPorts;
+    const results = await Promise.all(
+      commonPorts.map(
+        (port) =>
+          new Promise<number | null>((resolve) => {
+            const socket = createConnection({ host: ip, port });
+            const finish = (value: number | null) => {
+              socket.destroy();
+              resolve(value);
+            };
+            socket.setTimeout(1_500);
+            socket.once("connect", () => finish(port));
+            socket.once("timeout", () => finish(null));
+            socket.once("error", () => finish(null));
+          }),
+      ),
+    );
+    return results.filter((port): port is number => port !== null);
   };
 
-  const getPingCommand = (ip: string, timeout: number): string => {
+  const getPingInvocation = (ip: string, timeout: number): { executable: string; args: string[] } => {
     const isWindows = platform() === "win32";
-    return isWindows
-      ? `ping -n 1 -w ${timeout * 1000} ${ip}`
-      : `ping -c 1 -W ${timeout} ${ip}`;
+    return {
+      executable: "ping",
+      args: isWindows ? ["-n", "1", "-w", String(timeout * 1000), ip] : ["-c", "1", "-W", String(timeout), ip],
+    };
   };
 
   const isPingSuccessful = (stdout: string): boolean => {
@@ -511,9 +488,10 @@ export default function Command() {
     assignedIPs: string[],
   ): Promise<void> => {
     try {
-      const command = getPingCommand(ip, timeout);
-      const { stdout } = await execAsync(command, {
+      const invocation = getPingInvocation(ip, timeout);
+      const { stdout } = await execFileAsync(invocation.executable, invocation.args, {
         timeout: (timeout + 1) * 1000,
+        windowsHide: true,
       });
 
       if (isPingSuccessful(stdout)) {
@@ -1015,8 +993,8 @@ ${
                     icon={Icon.Network}
                     onAction={async () => {
                       try {
-                        const command = getPingCommand(device.ip, 2);
-                        await execAsync(command);
+                        const invocation = getPingInvocation(device.ip, 2);
+                        await execFileAsync(invocation.executable, invocation.args, { windowsHide: true });
                         showHUD(`Ping successful: ${device.ip}`);
                       } catch {
                         showHUD(`Ping failed: ${device.ip}`);
@@ -1080,8 +1058,8 @@ ${
                     icon={Icon.MagnifyingGlass}
                     onAction={async () => {
                       try {
-                        const command = getPingCommand(ip, 1);
-                        await execAsync(command);
+                        const invocation = getPingInvocation(ip, 1);
+                        await execFileAsync(invocation.executable, invocation.args, { windowsHide: true });
                         showHUD(`IP ${ip} is NOT available (ping successful)`);
                       } catch {
                         showHUD(`IP ${ip} is available (ping failed)`);
